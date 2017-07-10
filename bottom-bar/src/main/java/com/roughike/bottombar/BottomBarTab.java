@@ -1,7 +1,5 @@
 package com.roughike.bottombar;
 
-import android.animation.Animator;
-import android.animation.AnimatorListenerAdapter;
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
 import android.content.Context;
@@ -10,6 +8,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Parcelable;
 import android.support.annotation.ColorInt;
+import android.support.annotation.NonNull;
 import android.support.annotation.VisibleForTesting;
 import android.support.v4.view.ViewCompat;
 import android.support.v4.view.ViewPropertyAnimatorCompat;
@@ -42,36 +41,33 @@ public class BottomBarTab extends LinearLayout {
     private static final long ANIMATION_DURATION = 150;
     private static final float ACTIVE_TITLE_SCALE = 1;
     private static final float INACTIVE_FIXED_TITLE_SCALE = 0.86f;
+    private static final float ACTIVE_SHIFTING_TITLELESS_ICON_SCALE = 1.24f;
+    private static final float INACTIVE_SHIFTING_TITLELESS_ICON_SCALE = 1f;
 
     private final int sixDps;
     private final int eightDps;
     private final int sixteenDps;
 
+    @VisibleForTesting
+    BottomBarBadge badge;
+
     private Type type = Type.FIXED;
+    private boolean isTitleless;
     private int iconResId;
     private String title;
-
     private float inActiveAlpha;
     private float activeAlpha;
     private int inActiveColor;
     private int activeColor;
     private int barColorWhenSelected;
     private int badgeBackgroundColor;
-
+    private boolean badgeHidesWhenActive;
     private AppCompatImageView iconView;
     private TextView titleView;
     private boolean isActive;
-
     private int indexInContainer;
-
-    @VisibleForTesting
-    BottomBarBadge badge;
     private int titleTextAppearanceResId;
     private Typeface titleTypeFace;
-
-    enum Type {
-        FIXED, SHIFTING, TABLET
-    }
 
     BottomBarTab(Context context) {
         super(context);
@@ -81,13 +77,14 @@ public class BottomBarTab extends LinearLayout {
         sixteenDps = MiscUtils.dpToPixel(context, 16);
     }
 
-    void setConfig(Config config) {
+    void setConfig(@NonNull Config config) {
         setInActiveAlpha(config.inActiveTabAlpha);
         setActiveAlpha(config.activeTabAlpha);
         setInActiveColor(config.inActiveTabColor);
         setActiveColor(config.activeTabColor);
         setBarColorWhenSelected(config.barColorWhenSelected);
         setBadgeBackgroundColor(config.badgeBackgroundColor);
+        setBadgeHidesWhenActive(config.badgeHidesWhenSelected);
         setTitleTextAppearance(config.titleTextAppearance);
         setTitleTypeface(config.titleTypeFace);
     }
@@ -95,14 +92,21 @@ public class BottomBarTab extends LinearLayout {
     void prepareLayout() {
         inflate(getContext(), getLayoutResource(), this);
         setOrientation(VERTICAL);
-        setGravity(Gravity.CENTER_HORIZONTAL);
+        setGravity(isTitleless? Gravity.CENTER : Gravity.CENTER_HORIZONTAL);
         setLayoutParams(new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
+        setBackgroundResource(MiscUtils.getDrawableRes(getContext(), R.attr.selectableItemBackgroundBorderless));
 
         iconView = (AppCompatImageView) findViewById(R.id.bb_bottom_bar_icon);
         iconView.setImageResource(iconResId);
 
-        if (type != Type.TABLET) {
+        if (type != Type.TABLET && !isTitleless) {
             titleView = (TextView) findViewById(R.id.bb_bottom_bar_title);
+            titleView.setVisibility(VISIBLE);
+
+            if (type == Type.SHIFTING) {
+                findViewById(R.id.spacer).setVisibility(VISIBLE);
+            }
+
             updateTitle();
         }
 
@@ -148,7 +152,7 @@ public class BottomBarTab extends LinearLayout {
             titleView.setTextAppearance(getContext(), titleTextAppearanceResId);
         }
 
-        titleView.setTag(titleTextAppearanceResId);
+        titleView.setTag(R.id.bb_bottom_bar_appearance_id, titleTextAppearanceResId);
     }
 
     private void updateCustomTypeface() {
@@ -163,6 +167,20 @@ public class BottomBarTab extends LinearLayout {
 
     void setType(Type type) {
         this.type = type;
+    }
+
+    boolean isTitleless() {
+        return isTitleless;
+    }
+
+    void setIsTitleless(boolean isTitleless) {
+        if (isTitleless && getIconResId() == 0) {
+            throw new IllegalStateException("This tab is supposed to be " +
+                    "icon only, yet it has no icon specified. Index in " +
+                    "container: " + getIndexInTabContainer());
+        }
+
+        this.isTitleless = isTitleless;
     }
 
     public ViewGroup getOuterView() {
@@ -262,11 +280,19 @@ public class BottomBarTab extends LinearLayout {
         }
     }
 
+    public boolean getBadgeHidesWhenActive() {
+        return badgeHidesWhenActive;
+    }
+
+    public void setBadgeHidesWhenActive(boolean hideWhenActive) {
+        this.badgeHidesWhenActive = hideWhenActive;
+    }
+
     int getCurrentDisplayedIconColor() {
-        Object tag = iconView.getTag();
+        Object tag = iconView.getTag(R.id.bb_bottom_bar_color_id);
 
         if (tag instanceof Integer) {
-            return (int) iconView.getTag();
+            return (int) tag;
         }
 
         return 0;
@@ -281,10 +307,10 @@ public class BottomBarTab extends LinearLayout {
     }
 
     int getCurrentDisplayedTextAppearance() {
-        Object tag = titleView.getTag();
+        Object tag = titleView.getTag(R.id.bb_bottom_bar_appearance_id);
 
         if (titleView != null && tag instanceof Integer) {
-            return (int) titleView.getTag();
+            return (int) tag;
         }
 
         return 0;
@@ -302,6 +328,10 @@ public class BottomBarTab extends LinearLayout {
         }
 
         badge.setCount(count);
+
+        if (isActive && badgeHidesWhenActive) {
+            badge.hide();
+        }
     }
 
     public void setBadgeDot() {
@@ -339,14 +369,14 @@ public class BottomBarTab extends LinearLayout {
         iconView.setColorFilter(tint);
     }
 
+    public int getTitleTextAppearance() {
+        return titleTextAppearanceResId;
+    }
+
     @SuppressWarnings("deprecation")
     void setTitleTextAppearance(int resId) {
         this.titleTextAppearanceResId = resId;
         updateCustomTextAppearance();
-    }
-
-    public int getTitleTextAppearance() {
-        return titleTextAppearanceResId;
     }
 
     public void setTitleTypeface(Typeface typeface) {
@@ -362,18 +392,20 @@ public class BottomBarTab extends LinearLayout {
         isActive = true;
 
         if (animate) {
-            setTopPaddingAnimated(iconView.getPaddingTop(), sixDps);
-            animateIcon(activeAlpha);
-            animateTitle(ACTIVE_TITLE_SCALE, activeAlpha);
+            animateIcon(activeAlpha, ACTIVE_SHIFTING_TITLELESS_ICON_SCALE);
+            animateTitle(sixDps, ACTIVE_TITLE_SCALE, activeAlpha);
             animateColors(inActiveColor, activeColor);
         } else {
             setTitleScale(ACTIVE_TITLE_SCALE);
             setTopPadding(sixDps);
+            setIconScale(ACTIVE_SHIFTING_TITLELESS_ICON_SCALE);
             setColors(activeColor);
             setAlphas(activeAlpha);
         }
 
-        if (badge != null) {
+        setSelected(true);
+
+        if (badge != null && badgeHidesWhenActive) {
             badge.hide();
         }
     }
@@ -383,22 +415,24 @@ public class BottomBarTab extends LinearLayout {
 
         boolean isShifting = type == Type.SHIFTING;
 
-        float scale = isShifting ? 0 : INACTIVE_FIXED_TITLE_SCALE;
+        float titleScale = isShifting ? 0 : INACTIVE_FIXED_TITLE_SCALE;
         int iconPaddingTop = isShifting ? sixteenDps : eightDps;
 
         if (animate) {
-            setTopPaddingAnimated(iconView.getPaddingTop(), iconPaddingTop);
-            animateTitle(scale, inActiveAlpha);
-            animateIcon(inActiveAlpha);
+            animateTitle(iconPaddingTop, titleScale, inActiveAlpha);
+            animateIcon(inActiveAlpha, INACTIVE_SHIFTING_TITLELESS_ICON_SCALE);
             animateColors(activeColor, inActiveColor);
         } else {
-            setTitleScale(scale);
+            setTitleScale(titleScale);
             setTopPadding(iconPaddingTop);
+            setIconScale(INACTIVE_SHIFTING_TITLELESS_ICON_SCALE);
             setColors(inActiveColor);
             setAlphas(inActiveAlpha);
         }
 
-        if (!isShifting && badge != null) {
+        setSelected(false);
+
+        if (!isShifting && badge != null && !badge.isVisible()) {
             badge.show();
         }
     }
@@ -410,7 +444,7 @@ public class BottomBarTab extends LinearLayout {
         anim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
             @Override
             public void onAnimationUpdate(ValueAnimator valueAnimator) {
-               setColors((Integer) valueAnimator.getAnimatedValue());
+                setColors((Integer) valueAnimator.getAnimatedValue());
             }
         });
 
@@ -421,7 +455,7 @@ public class BottomBarTab extends LinearLayout {
     private void setColors(int color) {
         if (iconView != null) {
             iconView.setColorFilter(color);
-            iconView.setTag(color);
+            iconView.setTag(R.id.bb_bottom_bar_color_id, color);
         }
 
         if (titleView != null) {
@@ -464,15 +498,19 @@ public class BottomBarTab extends LinearLayout {
                 setLayoutParams(params);
             }
         });
-        animator.addListener(new AnimatorListenerAdapter() {
+
+        // Workaround to avoid using faulty onAnimationEnd() listener
+        postDelayed(new Runnable() {
             @Override
-            public void onAnimationEnd(Animator animation) {
+            public void run() {
                 if (!isActive && badge != null) {
+                    clearAnimation();
                     badge.adjustPositionAndSize(BottomBarTab.this);
                     badge.show();
                 }
             }
-        });
+        }, animator.getDuration());
+
         animator.start();
     }
 
@@ -483,7 +521,7 @@ public class BottomBarTab extends LinearLayout {
     }
 
     private void setTopPaddingAnimated(int start, int end) {
-        if (type == Type.TABLET) {
+        if (type == Type.TABLET || isTitleless) {
             return;
         }
 
@@ -504,28 +542,42 @@ public class BottomBarTab extends LinearLayout {
         paddingAnimator.start();
     }
 
-    private void animateTitle(float finalScale, float finalAlpha) {
-        if (type == Type.TABLET) {
+    private void animateTitle(int padding, float scale, float alpha) {
+        if (type == Type.TABLET && isTitleless) {
             return;
         }
 
+        setTopPaddingAnimated(iconView.getPaddingTop(), padding);
+
         ViewPropertyAnimatorCompat titleAnimator = ViewCompat.animate(titleView)
                 .setDuration(ANIMATION_DURATION)
-                .scaleX(finalScale)
-                .scaleY(finalScale);
-        titleAnimator.alpha(finalAlpha);
+                .scaleX(scale)
+                .scaleY(scale);
+        titleAnimator.alpha(alpha);
         titleAnimator.start();
     }
 
-    private void animateIcon(float finalAlpha) {
+    private void animateIconScale(float scale) {
         ViewCompat.animate(iconView)
                 .setDuration(ANIMATION_DURATION)
-                .alpha(finalAlpha)
+                .scaleX(scale)
+                .scaleY(scale)
                 .start();
     }
 
+    private void animateIcon(float alpha, float scale) {
+        ViewCompat.animate(iconView)
+                .setDuration(ANIMATION_DURATION)
+                .alpha(alpha)
+                .start();
+
+        if (isTitleless && type == Type.SHIFTING) {
+            animateIconScale(scale);
+        }
+    }
+
     private void setTopPadding(int topPadding) {
-        if (type == Type.TABLET) {
+        if (type == Type.TABLET || isTitleless) {
             return;
         }
 
@@ -538,12 +590,19 @@ public class BottomBarTab extends LinearLayout {
     }
 
     private void setTitleScale(float scale) {
-        if (type == Type.TABLET) {
+        if (type == Type.TABLET || isTitleless) {
             return;
         }
 
         ViewCompat.setScaleX(titleView, scale);
         ViewCompat.setScaleY(titleView, scale);
+    }
+
+    private void setIconScale(float scale) {
+        if (isTitleless && type == Type.SHIFTING) {
+            ViewCompat.setScaleX(iconView, scale);
+            ViewCompat.setScaleY(iconView, scale);
+        }
     }
 
     @Override
@@ -584,6 +643,10 @@ public class BottomBarTab extends LinearLayout {
         setBadgeCount(previousBadgeCount);
     }
 
+    enum Type {
+        FIXED, SHIFTING, TABLET
+    }
+
     public static class Config {
         private final float inActiveTabAlpha;
         private final float activeTabAlpha;
@@ -593,6 +656,7 @@ public class BottomBarTab extends LinearLayout {
         private final int badgeBackgroundColor;
         private final int titleTextAppearance;
         private final Typeface titleTypeFace;
+        private boolean badgeHidesWhenSelected = true;
 
         private Config(Builder builder) {
             this.inActiveTabAlpha = builder.inActiveTabAlpha;
@@ -601,6 +665,7 @@ public class BottomBarTab extends LinearLayout {
             this.activeTabColor = builder.activeTabColor;
             this.barColorWhenSelected = builder.barColorWhenSelected;
             this.badgeBackgroundColor = builder.badgeBackgroundColor;
+            this.badgeHidesWhenSelected = builder.hidesBadgeWhenSelected;
             this.titleTextAppearance = builder.titleTextAppearance;
             this.titleTypeFace = builder.titleTypeFace;
         }
@@ -612,6 +677,7 @@ public class BottomBarTab extends LinearLayout {
             private int activeTabColor;
             private int barColorWhenSelected;
             private int badgeBackgroundColor;
+            private boolean hidesBadgeWhenSelected = true;
             private int titleTextAppearance;
             private Typeface titleTypeFace;
 
@@ -642,6 +708,11 @@ public class BottomBarTab extends LinearLayout {
 
             public Builder badgeBackgroundColor(@ColorInt int color) {
                 this.badgeBackgroundColor = color;
+                return this;
+            }
+
+            public Builder hideBadgeWhenSelected(boolean hide) {
+                this.hidesBadgeWhenSelected = hide;
                 return this;
             }
 

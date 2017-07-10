@@ -14,7 +14,9 @@ import android.os.Bundle;
 import android.os.Parcelable;
 import android.support.annotation.ColorInt;
 import android.support.annotation.IdRes;
+import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
+import android.support.annotation.RequiresApi;
 import android.support.annotation.VisibleForTesting;
 import android.support.annotation.XmlRes;
 import android.support.design.widget.CoordinatorLayout;
@@ -22,9 +24,11 @@ import android.support.v4.content.ContextCompat;
 import android.support.v4.view.ViewCompat;
 import android.support.v4.view.ViewPropertyAnimatorListenerAdapter;
 import android.util.AttributeSet;
+import android.util.Log;
 import android.view.View;
 import android.view.ViewAnimationUtils;
 import android.view.ViewGroup;
+import android.view.ViewOutlineProvider;
 import android.view.ViewParent;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -51,15 +55,14 @@ import java.util.List;
 public class BottomBar extends LinearLayout implements View.OnClickListener, View.OnLongClickListener {
     private static final String STATE_CURRENT_SELECTED_TAB = "STATE_CURRENT_SELECTED_TAB";
     private static final float DEFAULT_INACTIVE_SHIFTING_TAB_ALPHA = 0.6f;
-
-    private BatchTabPropertyApplier batchPropertyApplier;
-
     // Behaviors
     private static final int BEHAVIOR_NONE = 0;
     private static final int BEHAVIOR_SHIFTING = 1;
     private static final int BEHAVIOR_SHY = 2;
     private static final int BEHAVIOR_DRAW_UNDER_NAV = 4;
+    private static final int BEHAVIOR_ICONS_ONLY = 8;
 
+    private BatchTabPropertyApplier batchPropertyApplier;
     private int primaryColor;
     private int screenWidth;
     private int tenDp;
@@ -74,14 +77,17 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
     private int inActiveTabColor;
     private int activeTabColor;
     private int badgeBackgroundColor;
+    private boolean hideBadgeWhenActive;
+    private boolean longPressHintsEnabled;
     private int titleTextAppearance;
     private Typeface titleTypeFace;
     private boolean showShadow;
+    private float shadowElevation;
+    private View shadowView;
 
     private View backgroundOverlay;
     private ViewGroup outerContainer;
     private ViewGroup tabContainer;
-    private View shadowView;
 
     private int defaultBackgroundColor = Color.WHITE;
     private int currentBackgroundColor;
@@ -90,47 +96,100 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
     private int inActiveShiftingItemWidth;
     private int activeShiftingItemWidth;
 
+    @Nullable
+    private TabSelectionInterceptor tabSelectionInterceptor;
+
+    @Nullable
     private OnTabSelectListener onTabSelectListener;
+
+    @Nullable
     private OnTabReselectListener onTabReselectListener;
 
     private boolean isComingFromRestoredState;
     private boolean ignoreTabReselectionListener;
 
+    private ShySettings shySettings;
     private boolean shyHeightAlreadyCalculated;
     private boolean navBarAccountedHeightCalculated;
 
     private BottomBarTab[] currentTabs;
 
     public BottomBar(Context context) {
-        super(context);
-        init(context, null);
+        this(context, null);
     }
 
     public BottomBar(Context context, AttributeSet attrs) {
-        super(context, attrs);
-        init(context, attrs);
+        this(context, attrs, 0);
     }
 
-    private void init(Context context, AttributeSet attrs) {
+    public BottomBar(Context context, @Nullable AttributeSet attrs, int defStyleAttr) {
+        super(context, attrs, defStyleAttr);
+        init(context, attrs, defStyleAttr, 0);
+    }
+
+    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
+    public BottomBar(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
+        super(context, attrs, defStyleAttr, defStyleRes);
+        init(context, attrs, defStyleAttr, defStyleRes);
+    }
+
+    private void init(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
         batchPropertyApplier = new BatchTabPropertyApplier(this);
 
-        populateAttributes(context, attrs);
+        populateAttributes(context, attrs, defStyleAttr, defStyleRes);
         initializeViews();
         determineInitialBackgroundColor();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            init21(context);
+        }
 
         if (tabXmlResource != 0) {
             setItems(tabXmlResource);
         }
     }
 
-    private void populateAttributes(Context context, AttributeSet attrs) {
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+
+        // This is so that in Pre-Lollipop devices there is a shadow BUT without pushing the content
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP && showShadow && shadowView != null) {
+            shadowView.setVisibility(VISIBLE);
+            ViewGroup.LayoutParams params = getLayoutParams();
+            if (params instanceof MarginLayoutParams) {
+                MarginLayoutParams layoutParams = (MarginLayoutParams) params;
+                final int shadowHeight = getResources().getDimensionPixelSize(R.dimen.bb_fake_shadow_height);
+
+                layoutParams.setMargins(layoutParams.leftMargin,
+                        layoutParams.topMargin - shadowHeight,
+                        layoutParams.rightMargin,
+                        layoutParams.bottomMargin);
+                setLayoutParams(params);
+            }
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
+    private void init21(Context context) {
+        if (showShadow) {
+            shadowElevation = getElevation();
+            shadowElevation = shadowElevation > 0
+                    ? shadowElevation
+                    : getResources().getDimensionPixelSize(R.dimen.bb_default_elevation);
+            setElevation(MiscUtils.dpToPixel(context, shadowElevation));
+            setOutlineProvider(ViewOutlineProvider.BOUNDS);
+        }
+    }
+
+    private void populateAttributes(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
         primaryColor = MiscUtils.getColor(getContext(), R.attr.colorPrimary);
         screenWidth = MiscUtils.getScreenWidth(getContext());
         tenDp = MiscUtils.dpToPixel(getContext(), 10);
         maxFixedItemWidth = MiscUtils.dpToPixel(getContext(), 168);
 
-        TypedArray ta = context.getTheme().obtainStyledAttributes(
-                attrs, R.styleable.BottomBar, 0, 0);
+        TypedArray ta = context.getTheme()
+                               .obtainStyledAttributes(attrs, R.styleable.BottomBar, defStyleAttr, defStyleRes);
 
         try {
             tabXmlResource = ta.getResourceId(R.styleable.BottomBar_bb_tabXmlResource, 0);
@@ -145,9 +204,11 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
                     Color.WHITE : ContextCompat.getColor(context, R.color.bb_inActiveBottomBarItemColor);
             int defaultActiveColor = isShiftingMode() ? Color.WHITE : primaryColor;
 
+            longPressHintsEnabled = ta.getBoolean(R.styleable.BottomBar_bb_longPressHintsEnabled, true);
             inActiveTabColor = ta.getColor(R.styleable.BottomBar_bb_inActiveTabColor, defaultInActiveColor);
             activeTabColor = ta.getColor(R.styleable.BottomBar_bb_activeTabColor, defaultActiveColor);
             badgeBackgroundColor = ta.getColor(R.styleable.BottomBar_bb_badgeBackgroundColor, Color.RED);
+            hideBadgeWhenActive = ta.getBoolean(R.styleable.BottomBar_bb_badgesHideWhenActive, true);
             titleTextAppearance = ta.getResourceId(R.styleable.BottomBar_bb_titleTextAppearance, 0);
             titleTypeFace = getTypeFaceFromAsset(ta.getString(R.styleable.BottomBar_bb_titleTypeFace));
             showShadow = ta.getBoolean(R.styleable.BottomBar_bb_showShadow, true);
@@ -166,8 +227,16 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
                 && NavbarUtils.shouldDrawBehindNavbar(getContext());
     }
 
-    private boolean isShy() {
+    boolean isShy() {
         return !isTabletMode && hasBehavior(BEHAVIOR_SHY);
+    }
+
+    boolean isShyHeightAlreadyCalculated() {
+        return shyHeightAlreadyCalculated;
+    }
+
+    private boolean isIconsOnlyMode() {
+        return !isTabletMode && hasBehavior(BEHAVIOR_ICONS_ONLY);
     }
 
     private boolean hasBehavior(int behavior) {
@@ -190,7 +259,6 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
 
         setLayoutParams(params);
         setOrientation(isTabletMode ? HORIZONTAL : VERTICAL);
-        ViewCompat.setElevation(this, MiscUtils.dpToPixel(getContext(), 8));
 
         View rootView = inflate(getContext(),
                 isTabletMode ? R.layout.bb_bottom_bar_item_container_tablet : R.layout.bb_bottom_bar_item_container, this);
@@ -199,11 +267,7 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
         backgroundOverlay = rootView.findViewById(R.id.bb_bottom_bar_background_overlay);
         outerContainer = (ViewGroup) rootView.findViewById(R.id.bb_bottom_bar_outer_container);
         tabContainer = (ViewGroup) rootView.findViewById(R.id.bb_bottom_bar_item_container);
-        shadowView = rootView.findViewById(R.id.bb_bottom_bar_shadow);
-
-        if (!showShadow) {
-            shadowView.setVisibility(GONE);
-        }
+        shadowView = findViewById(R.id.bb_bottom_bar_shadow);
     }
 
     private void determineInitialBackgroundColor() {
@@ -243,7 +307,7 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
         }
 
         TabParser parser = new TabParser(getContext(), defaultTabConfig, xmlRes);
-        updateItems(parser.getTabs());
+        updateItems(parser.parseTabs());
     }
 
     private BottomBarTab.Config getTabConfig() {
@@ -254,6 +318,7 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
                 .activeTabColor(activeTabColor)
                 .barColorWhenSelected(defaultBackgroundColor)
                 .badgeBackgroundColor(badgeBackgroundColor)
+                .hideBadgeWhenSelected(hideBadgeWhenActive)
                 .titleTextAppearance(titleTextAppearance)
                 .titleTypeFace(titleTypeFace)
                 .build();
@@ -276,6 +341,10 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
                 type = BottomBarTab.Type.TABLET;
             } else {
                 type = BottomBarTab.Type.FIXED;
+            }
+
+            if (isIconsOnlyMode()) {
+                bottomBarTab.setIsTitleless(true);
             }
 
             bottomBarTab.setType(type);
@@ -324,8 +393,9 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
         );
 
         inActiveShiftingItemWidth = (int) (proposedItemWidth * 0.9);
-        activeShiftingItemWidth = (int) (proposedItemWidth + (proposedItemWidth * (tabsToAdd.length * 0.1)));
-        int height = Math.round(getContext().getResources().getDimension(R.dimen.bb_height));
+        activeShiftingItemWidth = (int) (proposedItemWidth + (proposedItemWidth * ((tabsToAdd.length - 1) * 0.1)));
+        int height = Math.round(getContext().getResources()
+                                            .getDimension(R.dimen.bb_height));
 
         for (BottomBarTab tabView : tabsToAdd) {
             ViewGroup.LayoutParams params = tabView.getLayoutParams();
@@ -345,46 +415,94 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
                 tabContainer.addView(tabView);
             }
 
-            tabView.requestLayout();
+            tabView.setLayoutParams(params);
         }
     }
 
     /**
-     * Set a listener that gets fired when the selected tab changes.
+     * Returns the settings specific for a shy BottomBar.
      *
+     * @throws UnsupportedOperationException, if this BottomBar is not shy.
+     */
+    public ShySettings getShySettings() {
+        if (!isShy()) {
+            Log.e("BottomBar", "Tried to get shy settings for a BottomBar " +
+                    "that is not shy.");
+        }
+
+        if (shySettings == null) {
+            shySettings = new ShySettings(this);
+        }
+
+        return shySettings;
+    }
+
+    /**
+     * Set a listener that gets fired when the selected {@link BottomBarTab} is about to change.
+     *
+     * @param interceptor a listener for potentially interrupting changes in tab selection.
+     */
+    public void setTabSelectionInterceptor(@NonNull TabSelectionInterceptor interceptor) {
+        tabSelectionInterceptor = interceptor;
+    }
+
+    /**
+     * Removes the current {@link TabSelectionInterceptor} listener
+     */
+    public void removeOverrideTabSelectionListener() {
+        tabSelectionInterceptor = null;
+    }
+
+    /**
+     * Set a listener that gets fired when the selected {@link BottomBarTab} changes.
+     * <p>
      * Note: Will be immediately called for the currently selected tab
      * once when set.
      *
      * @param listener a listener for monitoring changes in tab selection.
      */
-    public void setOnTabSelectListener(@Nullable OnTabSelectListener listener) {
+    public void setOnTabSelectListener(@NonNull OnTabSelectListener listener) {
         setOnTabSelectListener(listener, true);
     }
 
     /**
-     * Set a listener that gets fired when the selected tab changes.
-     *
-     * If shouldFireInitially is set to false, this listener isn't fired straight away
+     * Set a listener that gets fired when the selected {@link BottomBarTab} changes.
+     * <p>
+     * If {@code shouldFireInitially} is set to false, this listener isn't fired straight away
      * it's set, but you'll get all events normally for consecutive tab selection changes.
      *
-     * @param listener a listener for monitoring changes in tab selection.
+     * @param listener            a listener for monitoring changes in tab selection.
      * @param shouldFireInitially whether the listener should be fired the first time it's set.
      */
-    public void setOnTabSelectListener(@Nullable OnTabSelectListener listener, boolean shouldFireInitially) {
+    public void setOnTabSelectListener(@NonNull OnTabSelectListener listener, boolean shouldFireInitially) {
         onTabSelectListener = listener;
 
-        if (shouldFireInitially && listener != null && getTabCount() > 0) {
+        if (shouldFireInitially && getTabCount() > 0) {
             listener.onTabSelected(getCurrentTabId());
         }
     }
 
     /**
-     * Set a listener that gets fired when a currently selected tab is clicked.
+     * Removes the current {@link OnTabSelectListener} listener
+     */
+    public void removeOnTabSelectListener() {
+        onTabSelectListener = null;
+    }
+
+    /**
+     * Set a listener that gets fired when a currently selected {@link BottomBarTab} is clicked.
      *
      * @param listener a listener for handling tab reselections.
      */
-    public void setOnTabReselectListener(@Nullable OnTabReselectListener listener) {
+    public void setOnTabReselectListener(@NonNull OnTabReselectListener listener) {
         onTabReselectListener = listener;
+    }
+
+    /**
+     * Removes the current {@link OnTabReselectListener} listener
+     */
+    public void removeOnTabReselectListener() {
+        onTabReselectListener = null;
     }
 
     /**
@@ -429,7 +547,7 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
      * Select a tab at the specified position.
      *
      * @param position the position to select.
-     * @param animate should the tab change be animated or not.
+     * @param animate  should the tab change be animated or not.
      */
     public void selectTabAtPosition(int position, boolean animate) {
         if (position > getTabCount() - 1 || position < 0) {
@@ -502,6 +620,17 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
     }
 
     /**
+     * Controls whether the long pressed tab title should be displayed in
+     * a helpful Toast if the title is not currently visible.
+     *
+     * @param enabled true if toasts should be shown to indicate the title
+     *                of a long pressed tab, false otherwise.
+     */
+    public void setLongPressHintsEnabled(boolean enabled) {
+        longPressHintsEnabled = enabled;
+    }
+
+    /**
      * Set alpha value used for inactive BottomBarTabs.
      */
     public void setInActiveTabAlpha(float alpha) {
@@ -569,6 +698,20 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
     }
 
     /**
+     * Controls whether the badge (if any) for active tabs
+     * should be hidden or not.
+     */
+    public void setBadgesHideWhenActive(final boolean hideWhenSelected) {
+        hideBadgeWhenActive = hideWhenSelected;
+        batchPropertyApplier.applyToAllTabs(new BatchTabPropertyApplier.TabPropertyUpdater() {
+            @Override
+            public void update(BottomBarTab tab) {
+                tab.setBadgeHidesWhenActive(hideWhenSelected);
+            }
+        });
+    }
+
+    /**
      * Set custom text apperance for all BottomBarTabs.
      */
     public void setTabTitleTextAppearance(int textAppearance) {
@@ -631,6 +774,10 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
     }
 
     private void updateTitleBottomPadding() {
+        if (isIconsOnlyMode()) {
+            return;
+        }
+
         int tabCount = getTabCount();
 
         if (tabContainer == null || tabCount == 0 || !isShiftingMode()) {
@@ -673,6 +820,7 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
 
             if (height != 0) {
                 updateShyHeight(height);
+                getShySettings().shyHeightCalculated();
                 shyHeightAlreadyCalculated = true;
             }
         }
@@ -740,13 +888,14 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
     }
 
     @Override
-    public void onClick(View v) {
-        handleClick(v);
+    public void onClick(View target) {
+        if (!(target instanceof BottomBarTab)) return;
+        handleClick((BottomBarTab) target);
     }
 
     @Override
-    public boolean onLongClick(View v) {
-        return handleLongClick(v);
+    public boolean onLongClick(View target) {
+        return !(target instanceof BottomBarTab) || handleLongClick((BottomBarTab) target);
     }
 
     private BottomBarTab findTabInLayout(ViewGroup child) {
@@ -761,9 +910,13 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
         return null;
     }
 
-    private void handleClick(View v) {
+    private void handleClick(BottomBarTab newTab) {
         BottomBarTab oldTab = getCurrentTab();
-        BottomBarTab newTab = (BottomBarTab) v;
+
+        if (tabSelectionInterceptor != null
+                && tabSelectionInterceptor.shouldInterceptTabSelection(oldTab.getId(), newTab.getId())) {
+            return;
+        }
 
         oldTab.deselect(true);
         newTab.select(true);
@@ -773,13 +926,16 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
         updateSelectedTab(newTab.getIndexInTabContainer());
     }
 
-    private boolean handleLongClick(View v) {
-        if (v instanceof BottomBarTab) {
-            BottomBarTab longClickedTab = (BottomBarTab) v;
+    private boolean handleLongClick(BottomBarTab longClickedTab) {
+        boolean areInactiveTitlesHidden = isShiftingMode() || isTabletMode;
+        boolean isClickedTitleHidden = !longClickedTab.isActive();
+        boolean shouldShowHint = areInactiveTitlesHidden
+                && isClickedTitleHidden
+                && longPressHintsEnabled;
 
-            if ((isShiftingMode() || isTabletMode) && !longClickedTab.isActive()) {
-                Toast.makeText(getContext(), longClickedTab.getTitle(), Toast.LENGTH_SHORT).show();
-            }
+        if (shouldShowHint) {
+            Toast.makeText(getContext(), longClickedTab.getTitle(), Toast.LENGTH_SHORT)
+                 .show();
         }
 
         return true;
@@ -898,35 +1054,24 @@ public class BottomBar extends LinearLayout implements View.OnClickListener, Vie
     private void backgroundCrossfadeAnimation(final int newColor) {
         ViewCompat.setAlpha(backgroundOverlay, 0);
         ViewCompat.animate(backgroundOverlay)
-                .alpha(1)
-                .setListener(new ViewPropertyAnimatorListenerAdapter() {
-                    @Override
-                    public void onAnimationEnd(View view) {
-                        onEnd();
-                    }
+                  .alpha(1)
+                  .setListener(new ViewPropertyAnimatorListenerAdapter() {
+                      @Override
+                      public void onAnimationEnd(View view) {
+                          onEnd();
+                      }
 
-                    @Override
-                    public void onAnimationCancel(View view) {
-                        onEnd();
-                    }
+                      @Override
+                      public void onAnimationCancel(View view) {
+                          onEnd();
+                      }
 
-                    private void onEnd() {
-                        outerContainer.setBackgroundColor(newColor);
-                        backgroundOverlay.setVisibility(View.INVISIBLE);
-                        ViewCompat.setAlpha(backgroundOverlay, 1);
-                    }
-                }).start();
-    }
-
-    /**
-     * Toggle translation of BottomBar to hidden and visible in a CoordinatorLayout.
-     *
-     * @param visible true resets translation to 0, false translates view to hidden
-     */
-    private void toggleShyVisibility(boolean visible) {
-        BottomNavigationBehavior<BottomBar> from = BottomNavigationBehavior.from(this);
-        if (from != null) {
-            from.setHidden(this, visible);
-        }
+                      private void onEnd() {
+                          outerContainer.setBackgroundColor(newColor);
+                          backgroundOverlay.setVisibility(View.INVISIBLE);
+                          ViewCompat.setAlpha(backgroundOverlay, 1);
+                      }
+                  })
+                  .start();
     }
 }
